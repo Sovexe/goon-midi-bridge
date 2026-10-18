@@ -1,15 +1,26 @@
 name: Windows build
 
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+  pull_request:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to attach the ZIP to (optional)
+        type: string
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.release_tag || github.ref }}
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --release --locked
       - run: Copy-Item target/release/GoonMidiBridge.exe .
@@ -22,3 +33,12 @@ jobs:
             LICENSE
             THIRD_PARTY_LICENSES.txt
           if-no-files-found: error
+      - name: Attach release ZIP
+        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+        run: |
+          Compress-Archive -LiteralPath GoonMidiBridge.exe, README.md, LICENSE, THIRD_PARTY_LICENSES.txt -DestinationPath GoonMidiBridge-windows-x64.zip
+          gh release upload "$env:RELEASE_TAG" GoonMidiBridge-windows-x64.zip --clobber
