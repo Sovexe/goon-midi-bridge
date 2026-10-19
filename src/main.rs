@@ -3,6 +3,7 @@
 mod bridge;
 mod client_link;
 mod engine;
+mod playback;
 
 use bridge::Bridge;
 use eframe::egui;
@@ -10,75 +11,13 @@ use engine::{
     MidiError, MidiFilePlayer, MidiRouter, RouterMessage, VelocityMode, DEFAULT_CHANNELS,
 };
 use midir::{MidiInput, MidiInputConnection};
-use serde_json::{json, Value};
+use playback::Playback;
+use serde_json::json;
 use std::{
     path::{Path, PathBuf},
     sync::{mpsc, Arc, Mutex},
-    time::{Duration, Instant},
+    time::Duration,
 };
-use tokio::sync::broadcast;
-
-struct Playback {
-    stop: mpsc::Sender<()>,
-    worker: Option<std::thread::JoinHandle<()>>,
-}
-
-impl Playback {
-    fn start(
-        schedule: Vec<(f64, RouterMessage)>,
-        router: Arc<Mutex<MidiRouter>>,
-        output: broadcast::Sender<Value>,
-        status: mpsc::Sender<String>,
-    ) -> Self {
-        let (stop, receiver) = mpsc::channel();
-        let worker = std::thread::spawn(move || {
-            let start = Instant::now();
-            let mut completed = true;
-            for (at, message) in schedule {
-                let wait = Duration::from_secs_f64(at).saturating_sub(start.elapsed());
-                match receiver.recv_timeout(wait) {
-                    Err(mpsc::RecvTimeoutError::Timeout) => {}
-                    Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                        completed = false;
-                        break;
-                    }
-                }
-                for event in router.lock().unwrap().handle(message) {
-                    let _ = output.send(event);
-                }
-            }
-
-            let mut router = router.lock().unwrap();
-            for event in router.panic() {
-                let _ = output.send(event);
-            }
-            router.finish_file();
-            if completed {
-                let _ = status.send("Playback finished.".into());
-            }
-        });
-        Self {
-            stop,
-            worker: Some(worker),
-        }
-    }
-
-    fn is_finished(&self) -> bool {
-        self.worker
-            .as_ref()
-            .is_some_and(std::thread::JoinHandle::is_finished)
-    }
-}
-
-impl Drop for Playback {
-    fn drop(&mut self) {
-        let _ = self.stop.send(());
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
-    }
-}
-
 struct App {
     bridge: Bridge,
     router: Arc<Mutex<MidiRouter>>,
@@ -87,6 +26,9 @@ struct App {
     input_index: usize,
     playback: Option<Playback>,
     file: Option<PathBuf>,
+    file_duration: f64,
+    position: f64,
+    seek_position: Option<f64>,
     transpose: i16,
     channels: [bool; 16],
     minimum_velocity: u8,
@@ -95,8 +37,6 @@ struct App {
     velocity_boost: f64,
     velocity_offset: i16,
     status: String,
-    status_tx: mpsc::Sender<String>,
-    status_rx: mpsc::Receiver<String>,
     byond_clients: Vec<client_link::Client>,
     selected_client: usize,
     link_result: Option<mpsc::Receiver<Result<usize, String>>>,
@@ -104,7 +44,6 @@ struct App {
 
 impl App {
     fn new(bridge: Bridge) -> Self {
-        let (status_tx, status_rx) = mpsc::channel();
         let router = bridge.router.clone();
         router
             .lock()
@@ -119,6 +58,9 @@ impl App {
             input_index: 0,
             playback: None,
             file: None,
+            file_duration: 0.0,
+            position: 0.0,
+            seek_position: None,
             transpose: 0,
             channels: DEFAULT_CHANNELS,
             minimum_velocity: 1,
@@ -127,8 +69,6 @@ impl App {
             velocity_boost: 1.5,
             velocity_offset: 0,
             status: "Open instruments, select BYOND, then click Link Instruments.".into(),
-            status_tx,
-            status_rx,
             byond_clients: client_link::clients(),
             selected_client: 0,
             link_result: None,
@@ -160,6 +100,8 @@ impl App {
     fn stop(&mut self) {
         self.midi_input.take();
         self.playback.take();
+        self.position = 0.0;
+        self.seek_position = None;
         let mut router = self.router.lock().unwrap();
         self.bridge.send(router.panic());
         router.finish_file();
@@ -224,6 +166,7 @@ impl App {
             Ok(schedule) => {
                 self.stop();
                 self.file = Some(path);
+                self.file_duration = schedule.last().map_or(0.0, |(at, _)| *at);
                 let channel_info = self.router.lock().unwrap().describe_file(&schedule);
                 self.bridge.send(vec![channel_info]);
                 self.status = "MIDI file loaded.".into();
@@ -237,6 +180,7 @@ impl App {
             self.status = "Open a MIDI file first.".into();
             return;
         };
+        let position = self.position;
         self.stop();
         let schedule = match self.prepare_playback(&path) {
             Ok(schedule) => schedule,
@@ -247,14 +191,76 @@ impl App {
         };
         self.playback = Some(Playback::start(
             schedule,
+            if position < self.duration() {
+                position
+            } else {
+                0.0
+            },
             self.router.clone(),
             self.bridge.events.clone(),
-            self.status_tx.clone(),
         ));
         self.status = format!(
             "Playing {}",
             path.file_name().unwrap_or_default().to_string_lossy()
         );
+    }
+
+    fn duration(&self) -> f64 {
+        self.file_duration / (f64::from(self.tempo_percent) / 100.0)
+    }
+
+    fn toggle_playback(&mut self) {
+        if let Some(playback) = &self.playback {
+            if playback.is_paused() {
+                playback.resume();
+                self.status = "Playback resumed.".into();
+            } else {
+                playback.pause();
+                self.status = "Playback paused.".into();
+            }
+        } else {
+            self.play();
+        }
+    }
+
+    fn seek(&mut self, position: f64) {
+        self.position = position.clamp(0.0, self.duration());
+        if let Some(playback) = &self.playback {
+            playback.seek(self.position);
+        }
+    }
+
+    fn playback_timeline(&mut self, ui: &mut egui::Ui) {
+        let duration = self.duration();
+        let position = self
+            .playback
+            .as_ref()
+            .map_or(self.position, Playback::position);
+        let mut selected = self.seek_position.unwrap_or(position);
+        ui.add_enabled_ui(self.file.is_some() && duration > 0.0, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().slider_width = (ui.available_width() - 125.0).max(120.0);
+                let response = ui
+                    .add(
+                        egui::Slider::new(&mut selected, 0.0..=duration)
+                            .show_value(false)
+                            .clamping(egui::SliderClamping::Always),
+                    )
+                    .on_hover_text("Seek");
+                if response.dragged() {
+                    self.seek_position = Some(selected);
+                }
+                if response.drag_stopped() || (response.changed() && !response.dragged()) {
+                    self.seek(selected);
+                    self.seek_position = None;
+                }
+                ui.label(format!(
+                    "{} / {}",
+                    playback_time(selected),
+                    playback_time(duration)
+                ));
+            });
+        });
     }
 
     fn instruments(&mut self, ui: &mut egui::Ui) {
@@ -362,28 +368,49 @@ impl App {
                 }
                 if ui
                     .add_enabled(
-                        self.file.is_some() && self.playback.is_none(),
-                        egui::Button::new("Play"),
+                        self.file.is_some(),
+                        egui::Button::new(match &self.playback {
+                            Some(playback) if playback.is_paused() => "Resume",
+                            Some(_) => "Pause",
+                            None => "Play",
+                        }),
                     )
                     .clicked()
                 {
-                    self.play();
+                    self.toggle_playback();
                 }
                 if ui
-                    .add_enabled(self.playback.is_some(), egui::Button::new("Stop"))
+                    .add_enabled(
+                        self.playback.is_some() || self.position > 0.0,
+                        egui::Button::new("Stop"),
+                    )
                     .clicked()
                 {
                     self.stop();
                     self.status = "Playback stopped.".into();
                 }
+                if ui
+                    .add_enabled(self.file.is_some(), egui::Button::new("Restart"))
+                    .clicked()
+                {
+                    self.stop();
+                    self.play();
+                }
                 ui.label("Tempo");
-                ui.add_enabled(
-                    self.playback.is_none(),
-                    egui::DragValue::new(&mut self.tempo_percent)
-                        .range(25..=200)
-                        .suffix("%"),
-                );
+                let previous_tempo = self.tempo_percent;
+                if ui
+                    .add_enabled(
+                        self.playback.is_none(),
+                        egui::DragValue::new(&mut self.tempo_percent)
+                            .range(25..=200)
+                            .suffix("%"),
+                    )
+                    .changed()
+                {
+                    self.position *= f64::from(previous_tempo) / f64::from(self.tempo_percent);
+                }
             });
+            self.playback_timeline(ui);
         });
     }
 
@@ -534,6 +561,11 @@ impl App {
     }
 }
 
+fn playback_time(seconds: f64) -> String {
+    let seconds = seconds.max(0.0) as u64;
+    format!("{}:{:02}", seconds / 60, seconds % 60)
+}
+
 const MUTED: egui::Color32 = egui::Color32::from_rgb(160, 160, 160);
 
 fn section(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui)) {
@@ -584,9 +616,6 @@ fn configure_style(ctx: &egui::Context) -> std::io::Result<()> {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
-        while let Ok(status) = self.status_rx.try_recv() {
-            self.status = status;
-        }
         if let Some(receiver) = &self.link_result {
             if let Ok(result) = receiver.try_recv() {
                 self.link_result = None;
@@ -597,7 +626,8 @@ impl eframe::App for App {
             }
         }
         if self.playback.as_ref().is_some_and(Playback::is_finished) {
-            self.playback.take();
+            self.position = self.playback.take().unwrap().position();
+            self.status = "Playback finished.".into();
         }
         ctx.request_repaint_after(Duration::from_millis(100));
         egui::TopBottomPanel::bottom("status")
@@ -661,7 +691,7 @@ fn main() -> eframe::Result {
                     eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png"))
                         .expect("Invalid app icon"),
                 )
-                .with_inner_size([760.0, 720.0])
+                .with_inner_size([760.0, 760.0])
                 .with_min_inner_size([720.0, 620.0]),
             ..Default::default()
         },

@@ -17,10 +17,10 @@ pub const DEFAULT_CHANNELS: [bool; 16] = {
 const AUTO_TARGET: f64 = 110.0;
 const AUTO_LEARN_NOTES: usize = 16;
 const VELOCITY_HISTORY_SIZE: usize = 256;
-const SUSTAIN_PEDAL: u8 = 64;
-const ALL_SOUND_OFF: u8 = 120;
-const RESET_CONTROLLERS: u8 = 121;
-const ALL_NOTES_OFF: u8 = 123;
+pub(crate) const SUSTAIN_PEDAL: u8 = 64;
+pub(crate) const ALL_SOUND_OFF: u8 = 120;
+pub(crate) const RESET_CONTROLLERS: u8 = 121;
+pub(crate) const ALL_NOTES_OFF: u8 = 123;
 static ROUTER_IDS: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

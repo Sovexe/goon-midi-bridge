@@ -14,6 +14,10 @@ extract it, and run **GoonMidiBridge.exe**.
 3. Enable keyboard input on each instrument. Use its MIDI badge to choose channels.
 4. Open a `.mid` file and click **Play**, or choose a live MIDI input and click **Connect**.
 
+For MIDI files, use **Pause/Resume**, **Stop** (return to the start), or **Restart**.
+Drag the timeline to seek; the time display shows elapsed and total playback time.
+You can seek while paused or before pressing Play. Tempo sets playback speed.
+
 **Auto** velocity adjusts quiet input. Use its offset for fine tuning and
 **Recalibrate** to start over. **Manual** applies a fixed multiplier; **Original**
 preserves incoming velocities. **Stop All Notes** stops playback and releases notes.
