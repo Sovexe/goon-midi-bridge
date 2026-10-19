@@ -1,6 +1,6 @@
 [package]
 name = "goon-midi-bridge"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Play MIDI files and live MIDI input through Goonstation instruments"
 license = "MIT"
