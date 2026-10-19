@@ -1,6 +1,6 @@
 use crate::engine::MidiRouter;
 use futures_util::{SinkExt, StreamExt};
-use rand::RngCore;
+use rand::Rng;
 use serde_json::Value;
 use std::{
     net::TcpListener as StdTcpListener,
@@ -39,7 +39,7 @@ pub struct Bridge {
 impl Bridge {
     pub fn start() -> Result<Self, String> {
         let mut token_bytes = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut token_bytes);
+        rand::rng().fill_bytes(&mut token_bytes);
         let token: String = token_bytes
             .iter()
             .map(|byte| format!("{byte:02x}"))

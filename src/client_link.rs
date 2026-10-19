@@ -3,15 +3,15 @@ use std::{
     path::Path,
     time::{Duration, Instant},
 };
-use windows::{
-    core::VARIANT,
-    Win32::{
-        System::Com::{
+use windows::Win32::{
+    System::{
+        Com::{
             CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
             COINIT_MULTITHREADED,
         },
-        UI::Accessibility::*,
+        Variant::VARIANT,
     },
+    UI::Accessibility::*,
 };
 use windows_sys::Win32::{
     Foundation::{CloseHandle, HWND, LPARAM},
@@ -219,7 +219,7 @@ fn find_instrument_controls(client: &Client) -> windows::core::Result<Vec<String
         let mut controls = BTreeSet::new();
         for window in search.windows {
             let root = match automation
-                .ElementFromHandle(windows::Win32::Foundation::HWND(window as isize))
+                .ElementFromHandle(windows::Win32::Foundation::HWND(window as *mut _))
             {
                 Ok(root) => root,
                 Err(_) => continue,

@@ -151,8 +151,7 @@ impl App {
 
     fn prepare_playback(&self, path: &Path) -> Result<Vec<(f64, RouterMessage)>, MidiError> {
         let bytes = MidiFilePlayer::read(path)?;
-        let speed = f64::from(self.tempo_percent) / 100.0;
-        let schedule = MidiFilePlayer::schedule(&bytes, speed)?;
+        let schedule = MidiFilePlayer::schedule(&bytes, 1.0)?;
         let mut router = self.router.lock().unwrap();
         router.prepare_file(&schedule);
         self.bridge.send(vec![router.describe_file(&schedule)]);
@@ -189,6 +188,7 @@ impl App {
                 return;
             }
         };
+        self.file_duration = schedule.last().map_or(0.0, |(at, _)| *at);
         self.playback = Some(Playback::start(
             schedule,
             if position < self.duration() {
@@ -196,6 +196,7 @@ impl App {
             } else {
                 0.0
             },
+            f64::from(self.tempo_percent) / 100.0,
             self.router.clone(),
             self.bridge.events.clone(),
         ));
@@ -206,7 +207,13 @@ impl App {
     }
 
     fn duration(&self) -> f64 {
-        self.file_duration / (f64::from(self.tempo_percent) / 100.0)
+        self.file_duration
+    }
+
+    fn update_tempo(&self) {
+        if let Some(playback) = &self.playback {
+            playback.set_speed(f64::from(self.tempo_percent) / 100.0);
+        }
     }
 
     fn toggle_playback(&mut self) {
@@ -265,18 +272,26 @@ impl App {
 
     fn instruments(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            egui::ComboBox::from_id_salt("byond_client")
-                .selected_text(
-                    self.byond_clients
-                        .get(self.selected_client)
-                        .map_or("Select BYOND client", |client| client.title.as_str()),
-                )
-                .width((ui.available_width() - 220.0).max(180.0))
-                .show_ui(ui, |ui| {
-                    for (index, client) in self.byond_clients.iter().enumerate() {
-                        ui.selectable_value(&mut self.selected_client, index, &client.title);
-                    }
-                });
+            let title = self
+                .byond_clients
+                .get(self.selected_client)
+                .map_or("Select BYOND client", |client| client.title.as_str());
+            let width = (ui.available_width() - 220.0).max(180.0);
+            ui.allocate_ui(egui::vec2(width, ui.spacing().interact_size.y), |ui| {
+                egui::ComboBox::from_id_salt("byond_client")
+                    .selected_text(title)
+                    .width(width)
+                    .truncate()
+                    .show_ui(ui, |ui| {
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                        for (index, client) in self.byond_clients.iter().enumerate() {
+                            ui.selectable_value(&mut self.selected_client, index, &client.title)
+                                .on_hover_text(&client.title);
+                        }
+                    })
+                    .response
+                    .on_hover_text(title);
+            });
             if ui.button("Refresh").clicked() {
                 self.byond_clients = client_link::clients();
                 self.selected_client = 0;
@@ -397,17 +412,15 @@ impl App {
                     self.play();
                 }
                 ui.label("Tempo");
-                let previous_tempo = self.tempo_percent;
                 if ui
-                    .add_enabled(
-                        self.playback.is_none(),
+                    .add(
                         egui::DragValue::new(&mut self.tempo_percent)
-                            .range(25..=200)
+                            .range(1..=300)
                             .suffix("%"),
                     )
                     .changed()
                 {
-                    self.position *= f64::from(previous_tempo) / f64::from(self.tempo_percent);
+                    self.update_tempo();
                 }
             });
             self.playback_timeline(ui);
@@ -598,7 +611,8 @@ fn configure_style(ctx: &egui::Context) -> std::io::Result<()> {
     }
     ctx.set_fonts(fonts);
 
-    let mut style = (*ctx.style()).clone();
+    ctx.set_theme(egui::Theme::Dark);
+    let mut style = (*ctx.style_of(egui::Theme::Dark)).clone();
     style.visuals = egui::Visuals::dark();
     style.visuals.panel_fill = egui::Color32::from_rgb(32, 32, 32);
     style.visuals.selection.bg_fill = egui::Color32::from_rgb(65, 85, 105);
@@ -610,12 +624,12 @@ fn configure_style(ctx: &egui::Context) -> std::io::Result<()> {
             .text_styles
             .insert(text, egui::FontId::proportional(14.0));
     }
-    ctx.set_style(style);
+    ctx.set_style_of(egui::Theme::Dark, style);
     Ok(())
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         if let Some(receiver) = &self.link_result {
             if let Ok(result) = receiver.try_recv() {
                 self.link_result = None;
@@ -630,13 +644,16 @@ impl eframe::App for App {
             self.status = "Playback finished.".into();
         }
         ctx.request_repaint_after(Duration::from_millis(100));
-        egui::TopBottomPanel::bottom("status")
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
+        egui::Panel::bottom("status")
             .frame(
                 egui::Frame::NONE
                     .fill(egui::Color32::from_rgb(32, 32, 32))
                     .inner_margin(12.0),
             )
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     if ui.add(egui::Button::new("Stop All Notes")).clicked() {
                         self.panic();
@@ -650,7 +667,7 @@ impl eframe::App for App {
                     .fill(egui::Color32::from_rgb(32, 32, 32))
                     .inner_margin(14.0),
             )
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
@@ -684,7 +701,7 @@ fn main() -> eframe::Result {
         }
     };
     eframe::run_native(
-        "Goon MIDI Bridge",
+        &format!("Goon MIDI Bridge {}", env!("CARGO_PKG_VERSION")),
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_icon(

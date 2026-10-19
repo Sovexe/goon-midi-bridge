@@ -1,6 +1,6 @@
 [package]
 name = "goon-midi-bridge"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Play MIDI files and live MIDI input through Goonstation instruments"
 license = "MIT"
@@ -13,17 +13,17 @@ name = "GoonMidiBridge"
 path = "src/main.rs"
 
 [dependencies]
-eframe = { version = "0.31.1", default-features = false, features = ["glow"] }
+eframe = { version = "0.37", default-features = false, features = ["glow"] }
 midly = "0.5"
-midir = "0.10"
+midir = "0.11"
 serde_json = "1"
-rand = "0.8"
-rfd = "0.15"
+rand = "0.10"
+rfd = "0.17"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
-tokio-tungstenite = "0.26"
+tokio-tungstenite = "0.30"
 futures-util = "0.3"
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
-windows = { version = "0.56", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Variant", "Win32_UI_Accessibility"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Ole", "Win32_System_Variant", "Win32_UI_Accessibility"] }
 
 [build-dependencies]
 winresource = "0.1"

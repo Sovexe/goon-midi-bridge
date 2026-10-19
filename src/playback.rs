@@ -14,6 +14,7 @@ enum Command {
     Pause,
     Resume,
     Seek(f64),
+    SetSpeed(f64),
     Stop,
 }
 
@@ -22,6 +23,7 @@ struct Clock {
     position: f64,
     started: Option<Instant>,
     duration: f64,
+    speed: f64,
 }
 
 impl Clock {
@@ -29,7 +31,7 @@ impl Clock {
         (self.position
             + self
                 .started
-                .map_or(0.0, |start| start.elapsed().as_secs_f64()))
+                .map_or(0.0, |start| start.elapsed().as_secs_f64() * self.speed))
         .min(self.duration)
     }
 }
@@ -44,6 +46,7 @@ impl Playback {
     pub fn start(
         schedule: Vec<(f64, RouterMessage)>,
         position: f64,
+        speed: f64,
         router: Arc<Mutex<MidiRouter>>,
         output: broadcast::Sender<Value>,
     ) -> Self {
@@ -52,6 +55,7 @@ impl Playback {
             position: position.clamp(0.0, duration),
             started: Some(Instant::now()),
             duration,
+            speed,
         }));
         let (commands, receiver) = mpsc::channel();
         let worker_clock = clock.clone();
@@ -84,7 +88,8 @@ impl Playback {
                 let command = if clock.started.is_none() {
                     receiver.recv().ok()
                 } else if let Some((at, _)) = schedule.get(next) {
-                    let wait = Duration::from_secs_f64((at - clock.position()).max(0.0));
+                    let wait =
+                        Duration::from_secs_f64((at - clock.position()).max(0.0) / clock.speed);
                     match receiver.recv_timeout(wait) {
                         Ok(command) => Some(command),
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -125,6 +130,12 @@ impl Playback {
                         updated.position = position;
                         updated.started = clock.started.map(|_| Instant::now());
                     }
+                    Some(Command::SetSpeed(speed)) => {
+                        let mut clock = worker_clock.lock().unwrap();
+                        clock.position = clock.position();
+                        clock.started = clock.started.map(|_| Instant::now());
+                        clock.speed = speed;
+                    }
                     Some(Command::Stop) | None => break,
                 }
             }
@@ -162,6 +173,12 @@ impl Playback {
     pub fn seek(&self, position: f64) {
         if position.is_finite() {
             let _ = self.commands.send(Command::Seek(position));
+        }
+    }
+
+    pub fn set_speed(&self, speed: f64) {
+        if speed.is_finite() && (0.01..=3.0).contains(&speed) {
+            let _ = self.commands.send(Command::SetSpeed(speed));
         }
     }
 
